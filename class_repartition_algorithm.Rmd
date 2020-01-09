@@ -1,0 +1,336 @@
+---
+title: "A school management tool to attribute teachers to classes"
+author: "Jonathan Bastard"
+csl: the-american-naturalist.csl
+output:
+  html_document:
+    theme: cerulean
+    toc: yes
+    toc_float: true
+  pdf_document:
+    toc: yes
+<!-- bibliography: references.bib -->
+---
+
+<!--
+IMAGES:
+Insert them with: ![alt text](image.png)
+You can also resize them if needed: convert image.png -resize 50% image.png
+If you want to center the image, go through HTML code:
+<div style="text-align:center"><img src ="image.png"/></div>
+
+REFERENCES:
+For references: Put all the bibTeX references in the file "references.bib"
+in the current folder and cite the references as @key or [@key] in the text.
+Uncomment the bibliography field in the above header and put a "References"
+title wherever you want to display the reference list.
+-->
+
+<style type="text/css">
+.main-container {
+  max-width: 1370px;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+
+```{r general_options, include = FALSE}
+knitr::knit_hooks$set(
+  margin = function(before, options, envir) {
+    if (before) par(mgp = c(1.5, .5, 0), bty = "n", plt = c(.105, .97, .13, .97))
+    else NULL
+  },
+  prompt = function(before, options, envir) {
+    options(prompt = if (options$engine %in% c("sh", "bash")) "$ " else "> ")
+  })
+
+knitr::opts_chunk$set(margin = TRUE, prompt = TRUE, comment = "",
+                      collapse = TRUE, cache = FALSE, autodep = TRUE,
+                      dev.args = list(pointsize = 11), fig.height = 3.5,
+                      fig.width = 4.24725, fig.retina = 2, fig.align = "center")
+
+options(width = 137)
+```
+
+# Objective
+
+Our algorithm aims to respond to a school management issue. Our objective is to determine which teachers should be assigned to which classes, with the following necessary criteria:
+
+- Each class must have exactly 1 teacher
+- Each class has a fixed number of hours to be taught
+- Each teacher must have 1 class or more
+- Each teacher must give a minimum mandatory number of hours
+- Each teacher can ask to give supplementary hours, or not. Teachers who do not ask for supplementary hours must not be assigned (strictly) more than 1 supplementary hour.
+
+The following preference criteria can be taken into account:
+
+- Wishes of teachers regarding supplementary hours (want to give / do not want) should be respected as much as possible
+- The number of supplementary hours should be as possible equally distributed among the teacher who asked them
+- Each teacher can give their preferences for some classes.
+
+# Principle
+
+Resolving this problem is equivalent to finding a matrix of teacher-class combination, $M_{combi}$, such that:
+
+- The number of rows of $M_{combi}$ is the number of teacher, and its number of columns is the number of classes
+- $M_{combi}$ is composed of "0" and "1"
+- There is exactly one "1" per column ("Each class must have exactly 1 teacher")
+- There is one "1" or more per row ("Each teacher must have 1 class or more")
+- The other necessary criteria are respected, and the preference criteria are optimized.
+
+$$ M_{combi} = \left[\begin{array}
+{rrr}
+0 & 0 & 1 & ... \\
+0 & 1 & 0 & ... \\
+... & ... & ... & ...
+\end{array}\right]$$
+
+# Example
+
+For instance, let us consider 3 teachers, 5 classes.
+
+Let us consider the vector $H_{classes}$ (of length 5) that counts the number of hours per class:
+
+$$ H_{classes} = \left[\begin{array}
+{rrr}
+5 \\
+3 \\
+7 \\
+5 \\
+4
+\end{array}\right]$$
+
+The vector $H_{mandatory, \ teachers}$ (of length 3) counts the number of mandatory hours per teacher:
+
+$$ H_{mandatory, \ teachers} = \left[\begin{array}
+{rrr}
+7 \\
+7 \\
+8
+\end{array}\right]$$
+
+If we consider the following value of $M_{combi}$:
+
+$$ M_{combi} = \left[\begin{array}
+{rrr}
+0 & 1 & 0 & 1 & 0 \\
+0 & 0 & 1 & 0 & 0 \\
+1 & 0 & 0 & 0 & 1
+\end{array}\right]$$
+
+Then, the number of class hours actually done by each teacher is:
+
+$$ H_{done, \ teachers} = M_{combi} * H_{classes} =  \left[\begin{array}
+{rrr}
+8 \\
+7 \\
+9
+\end{array}\right]$$
+
+If we deduct the mandatory hours from the hours actually done by each teacher, we find the number of supplementary hours for each teacher:
+
+$$ H_{sup, \ teachers} = H_{done, \ teachers} - H_{mandatory, \ teachers} = \left[\begin{array}
+{rrr}
+1 \\
+0 \\
+1
+\end{array}\right]$$
+
+If any element of $H_{sup, \ teachers}$ is $<0$, it would mean the mandatory hours are not fulfilled by each teacher. In this case, the teacher-class combination $M_{combi}$ would not be valid. However, in our example, all elements of $H_{sup, \ teachers}$ are $\ge0$.
+
+The second condition that has to be respected is that teachers who did not ask supplementary hours must not be assigned (strictly) more than 1 supplementary hours.
+
+# Algorithm
+
+In the function `distrib`, we draw repeatedly (`n_poss` times) a random value for the teacher-class combination matrix $M_{combi}$, in order to respect the rules described in the *Principle* section.
+
+We want to optimize the percentage of draws that allow to respect the necessary conditions. Moreover, the higher `n_poss`, the most optimized solution is found.
+
+## Assignment of a minimum number of classes per teacher
+
+Assigning a minimum number of classes per teacher allows to strongly optimize the drawing of $M_{combi}$. For instance, if a teacher needs to fulfill 13 mandatory hours, and if:
+
+$$ H_{classes} = \left[\begin{array}
+{rrr}
+5 \\
+3 \\
+7 \\
+5 \\
+4
+\end{array}\right]$$
+
+Then, no combination of 2 classes can allow this teacher to fulfill their mandatory hours, but at least one combination of 3 classes can. The minimum number of classes for this teacher is therefore 3.
+
+## Drawing of the teacher-class combination matrix
+
+Each repetition of the drawing follows this process:
+
+**Step 1:** Each of the teachers who still need a class to reach their minimum number of classes (every teacher at the begining) is assigned one random class, among the classes still available (every class at the begining). No class is drawn 2 times.
+
+**Step 2:** Classes that were drawn are removed from available classes.
+
+**Step 3:** If there are still teachers who need a class to reach their minimum number of classes, **Step 1** is started again. Otherwise, **Step 4** is performed.
+
+**Step 4:** If some classes are still available, each of them is randomly assigned one teacher. No teacher is drawn 2 times.
+
+*Optional feature in **Step 4**:* It is possible to assign these classes only to teachers that asked supplementary hours. It may optimize the drawing in the case the limiting factor is that teachers who didn't ask for supplementary hours are assigned too many class hours. However, this option might prevent the algorithm to reach some of the solutions.
+
+**Step 5:** The vector $H_{sup, \ teachers}$ defined in the *Example* section is calculated. If all elements of $H_{sup, \ teachers}$ are $>0$, and if $H_{sup, \ teachers}$ is $\leq 1$ for teachers who did not ask for supplementary hours, the teacher-class combination matrix $M_{combi}$ respects the necessary conditions. It is saved as one of the possibilities.
+
+## Scoring of the possibilities for the teacher-class combination matrix
+
+Among the draws that respect the necessary conditions, we calculate a score to be maximized, accounting for teachers' preferences, defined as follows:
+
+$$ S_{tot} = w_{sup}.S_{sup}+w_{equality}.S_{equality}+w_{pref}.S_{pref}$$
+where:
+
+* $S_{sup}$ ($\in[0,1]$) is the proportion of teachers who got what they wished in terms of supplementary hours (want / do not want).
+
+* $S_{equality} = \frac{1}{1 \, + \, range \, of \, supplementary \, hours}$ ($\in[0,1]$): is higher if there is more equality in the distribution of supplementary hours among those who asked for them (can also be the standard deviation).
+
+* $S_{pref}$ ($\in[0,1]$) is the proportion of teacher-class pairs (i.e. elements of $M_{combi}$) that correspond to teachers' preferences.
+
+* $w_{sup}$, $w_{pref}$ and $w_{equality}$ are the weights of these scores in the total score (all set by default to 1).
+
+# Code
+
+```{r}
+rm(list=ls(all=TRUE))
+```
+
+```{r}
+distrib = function(hours_class, mand_hours_teach, want_sup_hours, preference_matrix, n_poss = 10000, display_perc = T, weight_choice_sup = 1, weight_pref = 1, weight_equal = 1, optimize_algo = F){
+  
+  # We first make sure there are enough class hours to keep busy all teachers (make them fulfill all their mandatory teaching hours)
+  if(sum(hours_class) < sum(mand_hours_teach)){
+    stop("The number of class hours is too low to allow teachers to fulfill their mandatory teaching hours.")
+  }
+  
+  n_class = length(hours_class)
+  n_teach = length(mand_hours_teach)
+  
+  # In case there are more classes than teachers, some teachers will have no class, which does not respect our necessary criteria
+  if(n_class < n_teach){
+    stop("There are more teachers than class. Therefore, some teachers will have no class.")
+  }
+  
+  print(paste0("Given the total number of class hours, ", sum(hours_class) - sum(mand_hours_teach), " hours will be given as supplementary hours."))
+  
+  list_solutions = list()
+  list_sup_hours = list()
+  list_scores_total = c()
+  list_scores_choice_sup = c()
+  list_scores_equality_sup = c()
+  list_scores_preferences = c()
+  
+  solution_found = F
+  numb_solu = 0
+  
+  # "min_classes_per_teach" is, for each teacher, the minimum number of classes allowing them to fulfill their mandatory class hours
+  # For instance, let us assume Class_A=5 hours, Class_B=3 hours and Class_C=4 hours, and Teacher_A needs 8 mandatory hours. Then, Teacher_A's minimum number of classes is 2. Because no combination of 1 class can provide 8 hours, but at least one combination of 2 classes can.
+  min_classes_per_teach = rep(0, n_teach)
+  for(teach_i in 1:n_teach){
+    # We sort classes by decreasing order of hours number, and select the minimum number of classes after which the cumulative number of hours is at least equal to the teacher's number of mandatory hours
+    min_classes_per_teach[teach_i] = which(cumsum(sort(hours_class, decreasing = T)) >= mand_hours_teach[teach_i])[1]
+  }
+  
+  # We explore "n_poss" teacher-class combinations
+  for(poss in 1:n_poss){
+    if(display_perc){cat("\r", paste0("Exploration of teacher-class combinations: ", poss*100/n_poss, "%"))}
+    
+    # teacher-class combination matrix (M(combi)):
+    distrib_mat = base::matrix(data = 0, n_teach, n_class)
+    dimnames(distrib_mat) = list(names(mand_hours_teach), names(hours_class))
+    
+    classes_left = 1:n_class
+    teach_still_needs_min_number = 1:n_teach
+    combi_teach_class = matrix(0, 0, 2)
+    iter_combi = 1
+    
+    while((length(teach_still_needs_min_number) > 0) & (length(classes_left) >= length(teach_still_needs_min_number))){
+      
+      combi_teach_class = rbind(combi_teach_class, cbind(teach_still_needs_min_number, base::sample(x = classes_left, size = length(teach_still_needs_min_number), replace = F)))
+      
+      classes_left = classes_left[! classes_left %in% combi_teach_class[,2]]
+      
+      teach_still_needs_min_number = which(min_classes_per_teach > iter_combi)
+      
+      iter_combi = iter_combi +1
+    }
+    
+    if(optimize_algo){
+      combi_teach_class = rbind(combi_teach_class, cbind(base::sample(x = (1:n_teach)[want_sup_hours], size = length(classes_left), replace = F), classes_left))
+    }else{
+      combi_teach_class = rbind(combi_teach_class, cbind(base::sample(x = 1:n_teach, size = length(classes_left), replace = F), classes_left))
+    }
+    
+    for(class in 1:n_class){
+      distrib_mat[combi_teach_class[class,1], combi_teach_class[class,2]] = 1
+    }
+    
+    hours_per_teach = as.vector(distrib_mat %*% hours_class)
+    
+    sup_hours_teach = hours_per_teach - mand_hours_teach
+    names(sup_hours_teach) = names(mand_hours_teach)
+    
+    if(! any((sup_hours_teach < 0) | (as.numeric(! want_sup_hours) * sup_hours_teach > 1))){
+      solution_found = T
+      numb_solu = numb_solu + 1
+      
+      does_sup_hours = (sup_hours_teach > 0)
+      score_choice_sup_hours = sum(does_sup_hours == want_sup_hours)/n_teach
+      score_equality_sup_hours = 1/(1 + max(sup_hours_teach[want_sup_hours]) - min(sup_hours_teach[want_sup_hours]))# 1/sd(sup_hours_teach[want_sup_hours])
+      score_preferences = sum(preference_matrix * distrib_mat)/sum(distrib_mat)
+      
+      score_total = weight_choice_sup * score_choice_sup_hours + weight_equal * score_equality_sup_hours + weight_pref * score_preferences
+      
+      list_solutions[[numb_solu]] = distrib_mat
+      list_sup_hours[[numb_solu]] = sup_hours_teach
+      list_scores_total[numb_solu] = score_total
+      list_scores_choice_sup[numb_solu] = score_choice_sup_hours
+      list_scores_equality_sup[numb_solu] = score_equality_sup_hours
+      list_scores_preferences[numb_solu] = score_preferences
+    }
+  }
+  if(display_perc){cat("\n")}
+  
+  print(paste0("Among ", n_poss, " combinations tested, ", length(list_solutions), " were possible solutions."))
+
+  if(solution_found){
+    print(paste0("In the best solution found, ", 100*list_scores_choice_sup[which.max(list_scores_total)], "% of teachers obtained what they wanted in terms of supplementary hours. The best solution is:"))
+    print(list_solutions[[which.max(list_scores_total)]])
+    print("The number of supplementary hours done by each teacher are:")
+    print(list_sup_hours[[which.max(list_scores_total)]])
+  }else{
+    print("No solution was found.")
+  }
+
+  list(solutions=list_solutions, sup_hours=list_sup_hours, total_score=list_scores_total, score_choice_sup=list_scores_choice_sup, score_equality_sup=list_scores_equality_sup, score_preferences=list_scores_preferences)
+}
+```
+
+# Test with real data
+
+We test our algorithm with a case study with 26 classes (of 6, 5 or 3 hours) to be distributed among 8 teachers (with 9, 15 or 18 mandatory hours), half of which wish supplementary hours. We assume that Teacher 2 would prefer 6-hour classes (Classes 1 to 12), and that Teacher 7 would prefer 5-hour classes (Classes 13 to 25).
+
+```{r}
+ex_classes_hours = c("C1" = 6, "C2" = 6, "C3" = 6, "C4" = 6, "C5" = 6, "C6" = 6, "C7" = 6, "C8" = 6, "C9" = 6, "C10" = 6, "C11" = 6, "C12" = 6, "C13" = 5, "C14" = 5, "C15" = 5, "C16" = 5, "C17" = 5, "C18" = 5, "c19" = 5, "c20" = 5, "c21" = 5, "c22" = 5, "c23" = 5, "c24" = 5, "c25" = 5, "c26" = 3)
+
+ex_mand_hours = c("T1" = 15, "T2" = 15, "T3" = 15, "T4" = 18, "T5" = 18, "T6" = 18, "T7" = 18, "T8" = 9)
+
+ex_sup_hours = c("T1" = T, "T2" = F, "T3" = T, "T4" = F, "T5" = T, "T6" = F, "T7" = T, "T8" = F)
+
+ex_mat_pref = matrix(0, 8, 26)
+ex_mat_pref[2, 1:12] = 1
+ex_mat_pref[7, 13:25] = 1
+
+```
+
+The results are displayed:
+
+```{r}
+result = distrib(hours_class = ex_classes_hours, mand_hours_teach = ex_mand_hours, want_sup_hours = ex_sup_hours, preference_matrix = ex_mat_pref, n_poss = 100000, display_perc = F, optimize_algo = T)
+
+```
+
+
